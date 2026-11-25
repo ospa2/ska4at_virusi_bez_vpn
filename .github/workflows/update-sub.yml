@@ -2,8 +2,12 @@ name: Update Filtered VPN Subscription
 
 on:
   schedule:
-    - cron: "0 */2 * * *" # каждые 2 часа
-  workflow_dispatch:      # кнопка ручного запуска во вкладке Actions
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: update-sub
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -37,9 +41,8 @@ jobs:
             exit 0
           fi
 
-          # xray-knife возвращает код 3, если ни один конфиг не прошёл проверку
           set +e
-          xray-knife http -f non_ru.txt -t 40 -o working.txt
+          xray-knife http -f non_ru.txt --threads 40 -o working.txt
           code=$?
           set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
@@ -49,7 +52,7 @@ jobs:
       - name: Build subscription files
         run: |
           if [ -s working.txt ]; then
-            cp working.txt filtered.txt
+            grep -v '^[[:space:]]*$' working.txt > filtered.txt || true
             base64 -w 0 filtered.txt > filtered_b64.txt
           else
             : > filtered.txt
@@ -59,12 +62,20 @@ jobs:
 
       - name: Commit and push filtered lists
         run: |
+          BRANCH="${GITHUB_REF_NAME:-master}"
+          mkdir -p /tmp/sub_out
+          mv filtered.txt filtered_b64.txt /tmp/sub_out/
+
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          mv /tmp/sub_out/filtered.txt /tmp/sub_out/filtered_b64.txt .
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add filtered.txt filtered_b64.txt
           if ! git diff --cached --quiet; then
             git commit -m "chore: update filtered VPN configs ($(wc -l < filtered.txt) alive)"
-            git push
+            git push origin "$BRANCH"
           else
             echo "No changes to commit"
           fi
