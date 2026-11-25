@@ -11,7 +11,17 @@ const UNSAFE_PORTS = new Set([
    2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
    6679, 6697, 10080,
 ]);
-
+const SS_METHODS = new Set([
+   "aes-128-gcm",
+   "aes-256-gcm",
+   "chacha20-poly1305",
+   "chacha20-ietf-poly1305",
+   "xchacha20-poly1305",
+   "xchacha20-ietf-poly1305",
+   "2022-blake3-aes-128-gcm",
+   "2022-blake3-aes-256-gcm",
+   "2022-blake3-chacha20-poly1305",
+]);
 const fail = (reason) => {
    throw new Error(reason);
 };
@@ -413,7 +423,9 @@ function parseSS(core) {
    if (colon < 1 || colon === auth.length - 1) {
       fail("invalid-ss-auth");
    }
-
+   if (!SS_METHODS.has(auth.slice(0, colon).toLowerCase())) {
+      fail("unsupported-ss-cipher");
+   }
    // Поддержка конкретного шифра зависит от целевого ядра.
    return base(
       "ss",
@@ -426,6 +438,9 @@ function parseSS(core) {
 }
 
 function parseUri(core) {
+
+   if (/\s/.test(core)) fail("invalid-whitespace");
+   
    const scheme = core.slice(0, core.indexOf("://")).toLowerCase();
 
    if (scheme === "vmess") {
@@ -483,12 +498,39 @@ function parseUri(core) {
    decodeURIComponent(u.password);
 
    if (scheme === "vless" || scheme === "trojan") {
+      const security = (p.security || "none").toLowerCase();
+
+      if (scheme === "trojan" && security === "none") {
+         fail("unencrypted-transport");
+      }
+
+      if (scheme === "vless") {
+         const enc = p.encryption ?? "none";
+         const validEnc = enc === "none" || /^mlkem768x25519plus\./.test(enc);
+
+         if (!validEnc) fail("invalid-vless-encryption");
+
+         if (security === "none" && enc === "none") {
+            fail("unencrypted-transport");
+         }
+      }
+
+      if (security === "reality") {
+         if (!/^([0-9a-f]{2}){0,8}$/i.test(p.sid ?? "")) {
+            fail("invalid-reality-shortid");
+         }
+
+         if (!/^[A-Za-z0-9_-]{43}$/.test(p.pbk ?? "")) {
+            fail("invalid-reality-pbk");
+         }
+      }
+
       return base(
          scheme,
          u.hostname,
          port,
          p.type || "tcp",
-         p.security || (scheme === "trojan" ? "tls" : "none"),
+         security,
          p.sni || p.host || u.hostname,
          p.path || "/",
       );
@@ -599,7 +641,29 @@ function parsePlain(core, proto) {
    };
 }
 
+function httpToV2rayN(p) {
+   const profile = {
+      ConfigType: 10,
+      ConfigVersion: 4,
+      Remarks: p.name || `${p.host}:${p.port}`,
+      Address: p.host,
+      Port: Number(p.port),
+      Username: p.login || "",
+      Password: p.password || "",
+   };
 
+   const bytes = new TextEncoder().encode(JSON.stringify(profile));
+   const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join(
+      "",
+   );
+
+   const base64url = btoa(binary)
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+
+   return `v2rayn://http/${base64url}`;
+}
 export function canonicalKey(core, fields = null) {
    const f = fields || parseUri(core);
 
@@ -707,7 +771,7 @@ export function parseProxyDetailed(raw, defaultPlainProto = "socks5") {
               fields.login,
               fields.password,
            ])
-         : canonicalKey(core, fields);;
+         : canonicalKey(core, fields);
 
       return {
          proxy: {
@@ -721,8 +785,8 @@ export function parseProxyDetailed(raw, defaultPlainProto = "socks5") {
       };
    } catch (e) {
       // Не возвращаем URI или реквизиты в диагностике.
-      const known =
-         /^(missing-|invalid-|unsupported-|duplicate-|insecure-|fragment-|empty|local-host|non-public-ip|ipv4-mapped-ipv6)/;
+     const known =
+        /^(missing-|invalid-|unsupported-|duplicate-|insecure-|fragment-|unencrypted-|empty|local-host|non-public-ip|ipv4-mapped-ipv6)/;
 
       return {
          proxy: null,
@@ -736,6 +800,9 @@ export function parseProxy(raw, defaultPlainProto = "socks5") {
 }
 
 export function toCopyString(p, format = "uri") {
+   if (format === "uri" && p.proto?.toLowerCase() === "http") {
+      return httpToV2rayN(p);
+   }
    if (!p.plain) return p.raw;
 
    const host = p.host.includes(":") ? `[${p.host}]` : p.host;
