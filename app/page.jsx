@@ -1,3 +1,4 @@
+//page.js
 "use client";
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from "react";
 import { classifyHosts, GEO_RU, GEO_OTHER, GEO_UNKNOWN } from "./geoRu.jsx";

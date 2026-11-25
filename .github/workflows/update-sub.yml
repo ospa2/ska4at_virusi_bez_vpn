@@ -1,0 +1,70 @@
+name: Update Filtered VPN Subscription
+
+on:
+  schedule:
+    - cron: "0 */2 * * *" # каждые 2 часа
+  workflow_dispatch:      # кнопка ручного запуска во вкладке Actions
+
+permissions:
+  contents: write
+
+jobs:
+  filter-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch subscription and filter out RU
+        run: node scripts/filter-ru.mjs
+
+      - name: Download xray-knife
+        run: |
+          curl -fsSL -L https://github.com/lilendian0x00/xray-knife/releases/latest/download/Xray-knife-linux-64.zip -o xk.zip
+          unzip -o xk.zip -d xk
+          find xk -type f -name 'xray-knife' -exec install -m +x {} /usr/local/bin/xray-knife \;
+
+      - name: Real proxy check with xray-knife
+        run: |
+          if [ ! -s non_ru.txt ]; then
+            echo "No non-RU configs found"
+            : > working.txt
+            exit 0
+          fi
+
+          # xray-knife возвращает код 3, если ни один конфиг не прошёл проверку
+          set +e
+          xray-knife http -f non_ru.txt -t 40 -o working.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+            exit "$code"
+          fi
+
+      - name: Build subscription files
+        run: |
+          if [ -s working.txt ]; then
+            cp working.txt filtered.txt
+            base64 -w 0 filtered.txt > filtered_b64.txt
+          else
+            : > filtered.txt
+            : > filtered_b64.txt
+          fi
+          rm -rf non_ru.txt working.txt xk xk.zip
+
+      - name: Commit and push filtered lists
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add filtered.txt filtered_b64.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update filtered VPN configs ($(wc -l < filtered.txt) alive)"
+            git push
+          else
+            echo "No changes to commit"
+          fi
