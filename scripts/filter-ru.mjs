@@ -5,7 +5,6 @@ import dns from "node:dns/promises";
 const SUB_URL = "https://sub.vlessfo.ru/vlessforu/working_configs.txt";
 const OUT_FILE = "non_ru.txt";
 
-// ── Читаем RU_V4 / RU_V6 прямо из app/ruRanges.jsx ──
 const rangesSrc = fs.readFileSync("app/ruRanges.jsx", "utf8");
 const RU_V4 = rangesSrc.match(/export const RU_V4 =\s*"([^"]+)"/)?.[1];
 const RU_V6 = rangesSrc.match(/export const RU_V6 =\s*"([^"]+)"/)?.[1];
@@ -56,7 +55,6 @@ function inRanges(t, x) {
 }
 
 const V4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
 const stripBrackets = (h) => h.replace(/^\[|\]$/g, "");
 
 function v6Top48(s) {
@@ -86,64 +84,6 @@ function isRuIp(ip) {
    return null;
 }
 
-function codeToFlag(code) {
-   if (!code || !/^[A-Z]{2}$/i.test(code)) return "";
-   const c = code.toUpperCase();
-   return String.fromCodePoint(
-      0x1f1e6 + c.charCodeAt(0) - 65,
-      0x1f1e6 + c.charCodeAt(1) - 65,
-   );
-}
-
-function parseVmess(line) {
-   const raw = line.slice(8).split("#")[0].trim();
-   const pad = raw + "=".repeat((4 - (raw.length % 4)) % 4);
-   return JSON.parse(
-      Buffer.from(pad.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
-         "utf8",
-      ),
-   );
-}
-
-function extractFlagFromLine(line) {
-   if (line.startsWith("vmess://")) {
-      try {
-         const obj = parseVmess(line);
-         const m = FLAG_RE.exec(String(obj.ps || ""));
-         return m ? m[0] : "";
-      } catch {
-         return "";
-      }
-   }
-   const hashIdx = line.indexOf("#");
-   if (hashIdx === -1) return "";
-   const frag = line.slice(hashIdx + 1);
-   let decoded = frag;
-   try {
-      decoded = decodeURIComponent(frag);
-   } catch {}
-   const m = FLAG_RE.exec(decoded);
-   return m ? m[0] : "";
-}
-
-function setRemark(line, newName) {
-   if (line.startsWith("vmess://")) {
-      try {
-         const obj = parseVmess(line);
-         obj.ps = newName;
-         return (
-            "vmess://" +
-            Buffer.from(JSON.stringify(obj), "utf8").toString("base64")
-         );
-      } catch {
-         return line;
-      }
-   }
-   const hashIdx = line.indexOf("#");
-   const base = hashIdx === -1 ? line : line.slice(0, hashIdx);
-   return `${base}#${encodeURIComponent(newName)}`;
-}
-
 const dnsCache = new Map();
 async function resolveHost(host) {
    if (dnsCache.has(host)) return dnsCache.get(host);
@@ -154,63 +94,21 @@ async function resolveHost(host) {
    ]);
    if (v4.status === "fulfilled") ips.push(...v4.value);
    if (v6.status === "fulfilled") ips.push(...v6.value);
-
-   if (!ips.length) {
-      for (const type of ["A", "AAAA"]) {
-         try {
-            const r = await fetch(
-               `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`,
-               { headers: { accept: "application/dns-json" } },
-            );
-            if (r.ok) {
-               const j = await r.json();
-               const want = type === "A" ? 1 : 28;
-               for (const a of j.Answer || []) {
-                  if (a.type === want) ips.push(a.data);
-               }
-            }
-         } catch {}
-      }
-   }
    dnsCache.set(host, ips);
    return ips;
-}
-
-async function lookupCountryFlags(ips) {
-   const map = new Map();
-   const unique = [...new Set(ips.filter(Boolean))];
-   for (let i = 0; i < unique.length; i += 100) {
-      const chunk = unique.slice(i, i + 100);
-      try {
-         const ctrl = new AbortController();
-         const tid = setTimeout(() => ctrl.abort(), 5000);
-         const r = await fetch(
-            "http://ip-api.com/batch?fields=status,query,countryCode",
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify(chunk),
-               signal: ctrl.signal,
-            },
-         );
-         clearTimeout(tid);
-         if (r.ok) {
-            const arr = await r.json();
-            for (const item of arr) {
-               if (item?.status === "success" && item.countryCode) {
-                  map.set(item.query, codeToFlag(item.countryCode));
-               }
-            }
-         }
-      } catch {}
-   }
-   return map;
 }
 
 function extractHost(line) {
    if (line.startsWith("vmess://")) {
       try {
-         const json = parseVmess(line);
+         const raw = line.slice(8).split("#")[0].trim();
+         const pad = raw + "=".repeat((4 - (raw.length % 4)) % 4);
+         const json = JSON.parse(
+            Buffer.from(
+               pad.replace(/-/g, "+").replace(/_/g, "/"),
+               "base64",
+            ).toString("utf8"),
+         );
          return json.add ? stripBrackets(String(json.add).trim()) : null;
       } catch {
          return null;
@@ -252,7 +150,7 @@ async function main() {
    const res = await fetch(SUB_URL, {
       headers: { "User-Agent": "v2rayN/7.0" },
    });
-   if (!res.ok) throw new Error(`HTTP ${res.status} при скачивании подписки`);
+   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
    const rawText = decodeSubText(await res.text());
    const lines = [
@@ -284,37 +182,25 @@ async function main() {
                droppedRu++;
                return;
             }
-            let ip = lit === false ? host : null;
             if (lit === null && !host.includes(":")) {
                const ips = await resolveHost(host);
                if (ips.some((x) => isRuIp(x) === true)) {
                   droppedRu++;
                   return;
                }
-               ip = ips[0] || null;
             }
-            kept.push({ line, ip });
+            kept.push(line);
          }),
       );
    }
 
-   const flagByIp = await lookupCountryFlags(kept.map((x) => x.ip));
-
-   const renamed = kept.map(({ line, ip }) => {
-      const flag =
-         (ip && flagByIp.get(ip)) || extractFlagFromLine(line) || "🌐";
-      return setRemark(line, `s${flag}`);
-   });
-
-   // Дедупликация после переименования
-   const uniqueOut = [...new Set(renamed)];
    fs.writeFileSync(
       OUT_FILE,
-      uniqueOut.join("\n") + (uniqueOut.length ? "\n" : ""),
+      kept.join("\n") + (kept.length ? "\n" : ""),
       "utf8",
    );
    console.log(
-      `Всего: ${lines.length}, отсеяно RU: ${droppedRu}, осталось: ${uniqueOut.length}`,
+      `Всего: ${lines.length}, отсеяно RU (вход): ${droppedRu}, на тест: ${kept.length}`,
    );
 }
 
