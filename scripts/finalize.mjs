@@ -1,6 +1,7 @@
 // scripts/finalize.mjs
 import fs from "node:fs";
 
+const MIN_DOWNLOAD_MBPS = 3; // поставьте 0, если хотите только сортировать, не удаляя медленные
 function parseCsv(text) {
    const rows = [];
    let row = [];
@@ -141,11 +142,35 @@ async function main() {
    let droppedExitRu = 0;
 
    // Сортируем от меньшей задержки к большей
+   // Сортируем от самой высокой скорости download к низкой, при равенстве — по меньшему delay
    passed.sort((a, b) => {
-      const da = Number(a.delay) || 99999;
-      const db = Number(b.delay) || 99999;
-      return da - db;
+      const sa = Number(a.download) || 0;
+      const sb = Number(b.download) || 0;
+      if (sb !== sa) return sb - sa;
+      return (Number(a.delay) || 99999) - (Number(b.delay) || 99999);
    });
+
+
+   for (const r of passed) {
+      const dl = Number(r.download) || 0;
+      if (dl < MIN_DOWNLOAD_MBPS) {
+         continue;
+      }
+
+      const cc = /^[A-Z]{2}$/i.test(r.location || "")
+         ? r.location.toUpperCase()
+         : fallbackMap.get(r.ip) || "";
+
+      if (cc === "RU") {
+         droppedExitRu++;
+         continue;
+      }
+
+      const flag = codeToFlag(cc) || "🌐";
+      // Если захотите видеть скорость прямо в названии, например "s🇵🇱 31M":
+      // out.push(setRemark(r.link, `s${flag} ${Math.round(dl)}M`));
+      out.push(setRemark(r.link, `s${flag}`));
+   }
 
    for (const r of passed) {
       const cc = /^[A-Z]{2}$/i.test(r.location || "")

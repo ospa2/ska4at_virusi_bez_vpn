@@ -33,7 +33,7 @@ jobs:
           unzip -o xk.zip -d xk
           find xk -type f -name 'xray-knife' -exec install -m +x {} /usr/local/bin/xray-knife \;
 
-      - name: Real proxy check with xray-knife
+      - name: Real proxy check + speedtest with xray-knife
         run: |
           if [ ! -s non_ru.txt ]; then
             echo "No non-RU configs found"
@@ -41,8 +41,24 @@ jobs:
             exit 0
           fi
 
+          # 1. Быстро отсеиваем мёртвые (40 потоков)
           set +e
-          xray-knife http -f non_ru.txt --threads 40 -x csv -o results.csv
+          xray-knife http -f non_ru.txt --threads 40 -o alive.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+            exit "$code"
+          fi
+
+          if [ ! -s alive.txt ]; then
+            rm -f results.csv
+            exit 0
+          fi
+
+          # 2. Замеряем скорость только живым (10 потоков, по 5 MB)
+          # При желании можно добавить: --speedtest-url https://cachefly.cachefly.net/10mb.test
+          set +e
+          xray-knife http -f alive.txt --threads 10 --speedtest --amount 5 -x csv -o results.csv
           code=$?
           set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
@@ -52,7 +68,7 @@ jobs:
       - name: Build subscription files
         run: |
           node scripts/finalize.mjs
-          rm -rf non_ru.txt results.csv xk xk.zip
+          rm -rf non_ru.txt alive.txt results.csv xk xk.zip
 
       - name: Commit and push filtered lists
         run: |
