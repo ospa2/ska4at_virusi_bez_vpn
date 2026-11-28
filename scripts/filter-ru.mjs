@@ -54,6 +54,14 @@ function inRanges(t, x) {
    return false;
 }
 
+function isLteRelay(line) {
+   const idx = line.indexOf("#");
+   if (idx === -1) return false;
+   let frag = line.slice(idx + 1);
+   try { frag = decodeURIComponent(frag); } catch {}
+   return /LTE|5G|Все операторы/i.test(frag);
+}
+
 const V4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const stripBrackets = (h) => h.replace(/^\[|\]$/g, "");
 
@@ -177,16 +185,18 @@ async function main() {
          chunk.map(async (line) => {
             const host = extractHost(line);
             if (!host) return;
-            const lit = isRuIp(host);
-            if (lit === true) {
-               droppedRu++;
-               return;
-            }
-            if (lit === null && !host.includes(":")) {
-               const ips = await resolveHost(host);
-               if (ips.some((x) => isRuIp(x) === true)) {
+            if (!isLteRelay(line)) {
+               const lit = isRuIp(host);
+               if (lit === true) {
                   droppedRu++;
                   return;
+               }
+               if (lit === null && !host.includes(":")) {
+                  const ips = await resolveHost(host);
+                  if (ips.some((x) => isRuIp(x) === true)) {
+                     droppedRu++;
+                     return;
+                  }
                }
             }
             kept.push(line);
